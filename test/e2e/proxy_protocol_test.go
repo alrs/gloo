@@ -2,11 +2,15 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
-	gatewaydefaults "github.com/solo-io/gloo/projects/gateway/pkg/defaults"
-	static_plugin_gloo "github.com/solo-io/gloo/projects/gloo/pkg/api/v1/options/static"
 	"io"
 	"net"
+	"net/http"
+
+	gatewaydefaults "github.com/solo-io/gloo/projects/gateway/pkg/defaults"
+	static_plugin_gloo "github.com/solo-io/gloo/projects/gloo/pkg/api/v1/options/static"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -24,48 +28,46 @@ import (
 var _ = Describe("Proxy Protocol", func() {
 
 	/**
-		Test Overview:
+	Test Overview:
 
-		The purpose of this test is to confirm the behavior of the PROXY protocol listener filter:
-		https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/listener_filters/proxy_protocol
+	The purpose of this test is to confirm the behavior of the PROXY protocol listener filter:
+	https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/listener_filters/proxy_protocol
 
-		Per https://www.haproxy.org/download/1.9/doc/proxy-protocol.txt:
-		"In both cases, the protocol simply consists in an easily parsable header placed
-		by the connection initiator at the beginning of each connection. The protocol
-		is intentionally stateless in that it does not expect the sender to wait for
-		the receiver before sending the header, nor the receiver to send anything back."
+	Per https://www.haproxy.org/download/1.9/doc/proxy-protocol.txt:
+	"In both cases, the protocol simply consists in an easily parsable header placed
+	by the connection initiator at the beginning of each connection. The protocol
+	is intentionally stateless in that it does not expect the sender to wait for
+	the receiver before sending the header, nor the receiver to send anything back."
 
-		My goal was to create 2 gateway's:
-			- 1 without useProxyProto enabled, acting as as the proxy which will forward requests to the other gateway
-			- 1 WITH useProxyProto enabled, which will verify that the PROXY protocol header can be parsed
+	My goal was to create 2 gateway's:
+		- 1 without useProxyProto enabled, acting as as the proxy which will forward requests to the other gateway
+		- 1 WITH useProxyProto enabled, which will verify that the PROXY protocol header can be parsed
 
-		Ideally this test will also verify more complex cases, like SNI and PROXY protocol used together,
-		but I first wanted to get a simple case working. However, I have been unable to do so.
-		Any feedback is appreciated!
+	Ideally this test will also verify more complex cases, like SNI and PROXY protocol used together,
+	but I first wanted to get a simple case working. However, I have been unable to do so.
+	Any feedback is appreciated!
 
 	*/
 
 	var (
-		err error
-		ctx            context.Context
-		cancel         context.CancelFunc
-		testClients    services.TestClients
+		err           error
+		ctx           context.Context
+		cancel        context.CancelFunc
+		testClients   services.TestClients
 		envoyInstance *services.EnvoyInstance
 
 		// The proxyGateway is the gateway that accepts requests and forwards them to the proxyUpstream
 		// The proxyUpstream proxies requests forward, writing the PROXY protocol connection bytes at the beginning of the connection
-		proxyGateway *gatewayv1.Gateway
+		proxyGateway  *gatewayv1.Gateway
 		proxyUpstream *gloov1.Upstream
 
 		// The testGateway is the gateway that is configured with PROXY protocol support enabled
 		// Requests handled by this Gateway will fail if they do not present the PROXY connection bytes
 		testGateway *gatewayv1.Gateway
 
-
 		testUpstream *v1helpers.TestUpstream
 		//testUpstreamPort uint32
 		sslProxyPort uint32
-
 
 		secret *gloov1.Secret
 	)
@@ -112,7 +114,6 @@ var _ = Describe("Proxy Protocol", func() {
 		_, err = testClients.SecretClient.Write(secret, clients.WriteOpts{})
 		Expect(err).NotTo(HaveOccurred())
 	})
-
 
 	AfterEach(func() {
 		cancel()
@@ -177,13 +178,55 @@ var _ = Describe("Proxy Protocol", func() {
 
 		FIt("works pointing to proxy gateway", func() {
 			cert := gloohelpers.Certificate()
-			v1helpers.TestUpstreamReachable(proxyGateway.BindPort, testUpstream, &cert)
+
+			Eventually(func() error {
+				var client http.Client
+
+				const scheme = "https"
+				caCertPool := x509.NewCertPool()
+				ok := caCertPool.AppendCertsFromPEM([]byte(cert))
+				if !ok {
+					return fmt.Errorf("ca cert is not OK")
+				}
+
+				client.Transport = &http.Transport{
+					TLSClientConfig: &tls.Config{
+						RootCAs:            caCertPool,
+						InsecureSkipVerify: true,
+					},
+
+					DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+						var zeroDialer net.Dialer
+						c, err := zeroDialer.DialContext(ctx, network, addr)
+						if err != nil {
+							return nil, err
+						}
+						// inject proxy protocol bytes
+						_, err = c.Write([]byte("PROXY TCP4 1.2.3.4 1.2.3.5 443 443\r\n"))
+						if err != nil {
+							c.Close()
+							return nil, err
+						}
+						return c, nil
+					},
+				}
+
+				res, err := client.Get(fmt.Sprintf("%s://%s:%d/1", scheme, "localhost", proxyGateway.BindPort))
+				if err != nil {
+					return err
+				}
+				if res.StatusCode != http.StatusOK {
+					return fmt.Errorf("received status code (%v) is not expected status code (%v)", res.StatusCode, http.StatusOK)
+				}
+
+				return nil
+			}, "30s", "1s").Should(BeNil())
+
 		})
 
 	})
 
 })
-
 
 func getVirtualServiceToUpstream(name string, upstream *gloov1.Upstream, secret *gloov1.Secret) *gatewayv1.VirtualService {
 	testVirtualService := getSimpleVirtualServiceToUpstream(name, upstream.Metadata.Ref())
@@ -225,19 +268,19 @@ func getSimpleVirtualServiceToUpstream(vsName string, upstreamRef *core.Resource
 
 type ProxyProtocolHeader struct {
 	internetProtocol string
-	clientIP string
-	clientPort string
-	proxyIP string
-	proxyPort string
+	clientIP         string
+	clientPort       string
+	proxyIP          string
+	proxyPort        string
 }
 
 func NewLocalProxyProtocolHeader(clientPort, proxyPort string) *ProxyProtocolHeader {
 	return &ProxyProtocolHeader{
 		internetProtocol: "TCP4",
-		clientIP: "127.0.0.1",
-		clientPort: clientPort,
-		proxyIP: "127.0.0.1",
-		proxyPort: proxyPort,
+		clientIP:         "127.0.0.1",
+		clientPort:       clientPort,
+		proxyIP:          "127.0.0.1",
+		proxyPort:        proxyPort,
 	}
 }
 
