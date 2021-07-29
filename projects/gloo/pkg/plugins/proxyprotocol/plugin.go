@@ -26,7 +26,7 @@ func (p *plugin) Init(params plugins.InitParams) error {
 }
 
 func (p *plugin) ProcessListener(params plugins.Params, in *v1.Listener, out *envoy_config_listener_v3.Listener) error {
-	if in.GetUseProxyProto().GetValue() == false {
+	if in.GetUseProxyProto().GetValue() != true {
 		// If UseProxyProto is not defined on the listener, do not append the filter
 		return nil
 	}

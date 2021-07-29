@@ -30,7 +30,7 @@ var _ = Describe("Plugin", func() {
 		out = &envoy_config_listener_v3.Listener{}
 	})
 
-	When("UseProxyProto is defined on the listener", func() {
+	When("UseProxyProto=true is defined on the listener", func() {
 
 		BeforeEach(func() {
 			in.UseProxyProto = &wrappers.BoolValue{Value: true}
@@ -47,10 +47,25 @@ var _ = Describe("Plugin", func() {
 
 	})
 
-	When("UseProxyProto is not defined on the listener", func() {
+	When("UseProxyProto=false is defined on the listener", func() {
 
 		BeforeEach(func() {
 			in.UseProxyProto = &wrappers.BoolValue{Value: false}
+		})
+
+		It("does not append ProxyProtocol listener filter", func() {
+			err := p.ProcessListener(params, in, out)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(out.ListenerFilters).To(HaveLen(0))
+		})
+
+	})
+
+	When("UseProxyProto is not defined on the listener", func() {
+
+		BeforeEach(func() {
+			in.UseProxyProto = nil
 		})
 
 		It("does not append ProxyProtocol listener filter", func() {
