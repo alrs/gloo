@@ -193,6 +193,7 @@ var _ = Describe("Proxy Protocol", func() {
 					TLSClientConfig: &tls.Config{
 						RootCAs:            caCertPool,
 						InsecureSkipVerify: true,
+						ServerName:         "sniname.com",
 					},
 
 					DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -218,6 +219,8 @@ var _ = Describe("Proxy Protocol", func() {
 				if res.StatusCode != http.StatusOK {
 					return fmt.Errorf("received status code (%v) is not expected status code (%v)", res.StatusCode, http.StatusOK)
 				}
+
+				// TODO: probably verify in the metrics that the tls inspect doesnt complain that sni not found?
 
 				return nil
 			}, "30s", "1s").Should(BeNil())
