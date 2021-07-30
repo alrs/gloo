@@ -158,6 +158,10 @@ var _ = Describe("Proxy Protocol", func() {
 
 		const scheme = "https"
 
+		var (
+			rootCACert = gloohelpers.Certificate()
+		)
+
 		BeforeEach(func() {
 			// https gateway
 			gateway = gatewaydefaults.DefaultSslGateway(defaults.GlooSystem)
@@ -172,21 +176,20 @@ var _ = Describe("Proxy Protocol", func() {
 			})
 
 			It("works", func() {
-				client := getHttpClientWithoutProxyProtocol(gloohelpers.Certificate())
-
+				client := getHttpClientWithoutProxyProtocol("")
 				EventuallyGatewayReturnsOk(client, scheme)
 			})
 		})
 
-		FContext("with PROXY protocol", func() {
+		Context("with PROXY protocol", func() {
 
 			BeforeEach(func() {
 				gateway.UseProxyProto = &wrappers.BoolValue{Value: true}
 			})
 
 			It("works", func() {
-				proxyProtocolBytes := []byte("PROXY TCP4 1.2.3.4 1.2.3.5 443 443\r\n")
-				client := getHttpClientWithProxyProtocol(gloohelpers.Certificate(), proxyProtocolBytes)
+				proxyProtocolBytes := []byte("PROXY TCP4 1.2.3.4 1.2.3.5 123 987\r\n")
+				client := getHttpClientWithProxyProtocol(rootCACert, proxyProtocolBytes)
 
 				EventuallyGatewayReturnsOk(client, scheme)
 			})
@@ -228,26 +231,28 @@ func getHttpClient(rootCACert string, proxyProtocolBytes []byte) (*http.Client, 
 		tlsClientConfig.RootCAs = caCertPool
 	}
 
-	client.Transport = &http.Transport{
-		TLSClientConfig: tlsClientConfig,
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var zeroDialer net.Dialer
-			c, err := zeroDialer.DialContext(ctx, network, addr)
+	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var zeroDialer net.Dialer
+		c, err := zeroDialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if len(proxyProtocolBytes) > 0 {
+			// inject proxy protocol bytes
+			// example: []byte("PROXY TCP4 1.2.3.4 1.2.3.5 443 443\r\n")
+			_, err := c.Write(proxyProtocolBytes)
 			if err != nil {
+				_ = c.Close()
 				return nil, err
 			}
-			if len(proxyProtocolBytes) > 0 {
-				// inject proxy protocol bytes
-				// example: []byte("PROXY TCP4 1.2.3.4 1.2.3.5 443 443\r\n")
-				_, err = c.Write(proxyProtocolBytes)
-				if err != nil {
-					_ = c.Close()
-					return nil, err
-				}
-			}
+		}
 
-			return c, nil
-		},
+		return c, nil
+	}
+
+	client.Transport = &http.Transport{
+		TLSClientConfig: tlsClientConfig,
+		DialContext:     dialContext,
 	}
 
 	return &client, nil
