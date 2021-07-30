@@ -176,7 +176,7 @@ var _ = Describe("Proxy Protocol", func() {
 			})
 
 			It("works", func() {
-				client := getHttpClientWithoutProxyProtocol("")
+				client := getHttpClientWithoutProxyProtocol(rootCACert)
 				EventuallyGatewayReturnsOk(client, scheme)
 			})
 		})
